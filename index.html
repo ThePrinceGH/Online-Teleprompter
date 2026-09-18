@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cue — teleprompter</title>
+<meta name="description" content="A browser teleprompter: paste a script, set the roll speed, read.">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-512.png">
+<meta name="theme-color" content="#070908">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Cue">
+<style>
+  :root{
+    --blackout:#070908;
+    --panel:#121614;
+    --panel-hi:#1b211e;
+    --rule:#2a322e;
+    --ink:#e9efea;
+    --ink-dim:#8b968f;
+    --tally:#ff2d20;
+    --standby:#ffab1f;
+    --focus:#7fd1ff;
+    --stage-bg:#000;
+    --stage-fg:#fff;
+    --cue-line:rgba(255,45,32,.85);
+    --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    --read-sans: "Helvetica Neue", Helvetica, Arial, "Segoe UI", system-ui, sans-serif;
+    --read-serif: Charter, "Bitstream Charter", "Iowan Old Style", Georgia, "Times New Roman", serif;
+    --console-h: 88px;
+  }
+
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--blackout); color:var(--ink);
+    font-family:var(--ui); -webkit-font-smoothing:antialiased;
+    overflow:hidden;
+  }
+  button,select,input,textarea{font:inherit;color:inherit}
+  :focus-visible{outline:2px solid var(--focus); outline-offset:2px}
+
+  /* ---------- stage ---------- */
+  #stage{
+    position:fixed; inset:0 0 var(--console-h) 0;
+    background:var(--stage-bg); overflow:hidden; cursor:pointer;
+  }
+  #mirror{position:absolute; inset:0; will-change:transform}
+  #script{
+    position:absolute; top:0; left:50%;
+    transform:translate3d(-50%,0,0); will-change:transform;
+    width:100%; max-width:var(--measure,1100px);
+    padding:46vh 5vw 88vh;
+    color:var(--stage-fg);
+    font-family:var(--read-sans);
+    font-size:var(--size,64px);
+    line-height:var(--leading,1.45);
+    font-weight:600;
+    text-wrap:pretty;
+  }
+  #script.serif{font-family:var(--read-serif); font-weight:500}
+  #script p{margin:0 0 .75em}
+  #script .slug{
+    font-size:.44em; letter-spacing:.04em; font-weight:700;
+    color:var(--standby); margin:1.2em 0 .5em; opacity:.9;
+  }
+  #script .cue{
+    font-size:.5em; font-weight:500; font-style:italic;
+    color:var(--ink-dim); margin:.4em 0 .8em;
+  }
+  #script .cue::before{content:"⟨ "}
+  #script .cue::after{content:" ⟩"}
+
+  /* the cue bar: the one loud element */
+  #cuebar{position:absolute; left:0; right:0; top:42%; pointer-events:none}
+  #cuebar .rule{height:2px; background:linear-gradient(90deg,transparent,var(--cue-line) 12%,var(--cue-line) 88%,transparent)}
+  #cuebar .arrow{
+    position:absolute; top:50%; width:0;height:0;
+    border-top:11px solid transparent; border-bottom:11px solid transparent;
+  }
+  #cuebar .arrow.l{left:0; transform:translateY(-50%); border-left:16px solid var(--cue-line)}
+  #cuebar .arrow.r{right:0; transform:translateY(-50%); border-right:16px solid var(--cue-line)}
+  body.no-cue #cuebar{display:none}
+
+  #countdown{
+    position:absolute; inset:0; display:none; place-items:center;
+    background:rgba(0,0,0,.72); font-size:22vh; font-weight:700;
+    font-variant-numeric:tabular-nums; color:var(--standby);
+  }
+  #countdown.on{display:grid}
+
+  body.blackout #mirror, body.blackout #cuebar{visibility:hidden}
+  #blackoutNote{
+    position:absolute; inset:auto 0 24px 0; text-align:center;
+    color:#3a423d; font-size:13px; letter-spacing:.06em; display:none;
+  }
+  body.blackout #blackoutNote{display:block}
+
+  /* ---------- console ---------- */
+  #console{
+    position:fixed; left:0; right:0; bottom:0; height:var(--console-h);
+    background:var(--panel); border-top:1px solid var(--rule);
+    display:flex; align-items:center; gap:18px; padding:0 16px;
+    padding-bottom:env(safe-area-inset-bottom);
+  }
+  #lamp{display:flex; flex-direction:column; gap:6px; align-items:center; width:62px; flex:none}
+  #lamp .bulb{
+    width:52px; height:22px; border-radius:3px; background:#241f1e;
+    border:1px solid #33292a; transition:background .12s, box-shadow .12s;
+  }
+  #lamp .bulb.live{background:var(--tally); box-shadow:0 0 18px rgba(255,45,32,.55)}
+  #lamp .bulb.hold{background:var(--standby); box-shadow:0 0 14px rgba(255,171,31,.4)}
+  #lamp .state{font-size:10px; letter-spacing:.14em; color:var(--ink-dim)}
+
+  .transport{display:flex; gap:8px; flex:none}
+  .btn{
+    background:var(--panel-hi); border:1px solid var(--rule); border-radius:4px;
+    height:40px; min-width:44px; padding:0 12px; cursor:pointer;
+    display:inline-flex; align-items:center; justify-content:center; gap:7px;
+  }
+  .btn:hover{background:#232a26}
+  .btn[aria-pressed="true"]{background:#2b3530; border-color:#44514b; color:#fff}
+  .btn.go{min-width:104px; font-weight:650}
+  .btn svg{width:15px;height:15px;fill:currentColor}
+
+  .dials{display:flex; gap:20px; flex:1; min-width:0; overflow-x:auto; scrollbar-width:none}
+  .dials::-webkit-scrollbar{display:none}
+  .dial{display:flex; flex-direction:column; gap:3px; min-width:126px}
+  .dial .top{display:flex; justify-content:space-between; align-items:baseline; font-size:11px; color:var(--ink-dim)}
+  .dial .val{color:var(--ink); font-variant-numeric:tabular-nums}
+  input[type=range]{
+    -webkit-appearance:none; appearance:none; width:100%; height:16px; background:transparent; margin:0;
+  }
+  input[type=range]::-webkit-slider-runnable-track{height:3px; background:var(--rule); border-radius:2px}
+  input[type=range]::-moz-range-track{height:3px; background:var(--rule); border-radius:2px}
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none; width:14px; height:14px; margin-top:-5.5px;
+    border-radius:50%; background:var(--ink); cursor:grab;
+  }
+  input[type=range]::-moz-range-thumb{width:14px;height:14px;border:0;border-radius:50%;background:var(--ink);cursor:grab}
+
+  #clock{
+    flex:none; text-align:right; font-variant-numeric:tabular-nums; line-height:1.25;
+  }
+  #clock .elapsed{font-size:20px; letter-spacing:.02em}
+  #clock .left{font-size:11px; color:var(--ink-dim)}
+
+  #progress{position:fixed; left:0; right:0; bottom:var(--console-h); height:2px; background:#1c2320}
+  #progress i{display:block; height:100%; width:0; background:var(--tally)}
+
+  /* ---------- drawer ---------- */
+  #drawer{
+    position:fixed; top:0; right:0; bottom:var(--console-h); width:min(520px,100%);
+    background:var(--panel); border-left:1px solid var(--rule);
+    transform:translateX(101%); transition:transform .18s ease;
+    display:flex; flex-direction:column; z-index:5;
+  }
+  #drawer.open{transform:none}
+  @media (prefers-reduced-motion:reduce){#drawer{transition:none}}
+  .drawer-head{display:flex; align-items:center; gap:10px; padding:12px 14px; border-bottom:1px solid var(--rule)}
+  .drawer-head h1{font-size:14px; margin:0; font-weight:650; flex:1}
+  .drawer-head .hint{font-size:11px; color:var(--ink-dim)}
+  #editor{
+    flex:1; width:100%; resize:none; border:0; background:#0d100f; padding:16px;
+    font-family:var(--read-sans); font-size:15px; line-height:1.65;
+  }
+  .drawer-foot{
+    padding:10px 14px; border-top:1px solid var(--rule);
+    display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+  }
+  .drawer-foot select{
+    background:var(--panel-hi); border:1px solid var(--rule); border-radius:4px; height:34px; padding:0 8px; max-width:170px;
+  }
+  .drawer-foot .stat{margin-left:auto; font-size:11px; color:var(--ink-dim); font-variant-numeric:tabular-nums}
+  .btn.sm{height:34px; min-width:0; padding:0 10px; font-size:13px}
+
+  #keys{
+    position:fixed; inset:0; background:rgba(5,7,6,.9); z-index:9;
+    display:none; place-items:center; padding:24px;
+  }
+  #keys.on{display:grid}
+  #keys .card{
+    background:var(--panel); border:1px solid var(--rule); border-radius:6px;
+    padding:22px 24px; max-width:460px; width:100%;
+  }
+  #keys h2{margin:0 0 14px; font-size:15px}
+  #keys dl{display:grid; grid-template-columns:auto 1fr; gap:9px 16px; margin:0; font-size:13px}
+  #keys dt{font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--standby); white-space:nowrap}
+  #keys dd{margin:0; color:var(--ink-dim)}
+
+  @media (max-width:760px){
+    :root{--console-h:132px}
+    #console{flex-wrap:wrap; align-content:center; gap:10px 14px; padding:10px 12px}
+    .dials{order:3; width:100%; flex-basis:100%}
+    #clock{margin-left:auto}
+  }
+</style>
+</head>
+<body>
+
+<main id="stage" aria-label="Prompter">
+  <div id="mirror"><article id="script"></article></div>
+  <div id="cuebar"><span class="arrow l"></span><div class="rule"></div><span class="arrow r"></span></div>
+  <div id="countdown" aria-hidden="true"></div>
+  <p id="blackoutNote">Blacked out — press B</p>
+</main>
+
+<div id="progress"><i></i></div>
+
+<footer id="console">
+  <div id="lamp">
+    <div class="bulb" id="bulb"></div>
+    <div class="state" id="state">STANDBY</div>
+  </div>
+
+  <div class="transport">
+    <button class="btn go" id="roll" aria-pressed="false">Roll</button>
+    <button class="btn" id="top" title="Back to top (Home)">Top</button>
+    <button class="btn" id="mirrorBtn" aria-pressed="false" title="Mirror for beam-splitter glass (M)">Mirror</button>
+    <button class="btn" id="fsBtn" title="Fullscreen (F)">Full</button>
+    <button class="btn" id="installBtn" hidden title="Install as a desktop app">Install</button>
+    <button class="btn" id="scriptBtn" aria-pressed="false" title="Script &amp; settings (E)">Script</button>
+    <button class="btn" id="helpBtn" title="Keyboard shortcuts (?)">?</button>
+  </div>
+
+  <div class="dials">
+    <label class="dial">
+      <span class="top">Speed <span class="val" id="speedVal">—</span></span>
+      <input type="range" id="speed" min="8" max="260" step="1" value="70">
+    </label>
+    <label class="dial">
+      <span class="top">Text size <span class="val" id="sizeVal">64px</span></span>
+      <input type="range" id="size" min="24" max="160" step="2" value="64">
+    </label>
+    <label class="dial">
+      <span class="top">Line height <span class="val" id="leadVal">1.45</span></span>
+      <input type="range" id="lead" min="1.1" max="2.2" step="0.05" value="1.45">
+    </label>
+    <label class="dial">
+      <span class="top">Column width <span class="val" id="measureVal">1100px</span></span>
+      <input type="range" id="measure" min="480" max="2200" step="20" value="1100">
+    </label>
+  </div>
+
+  <div id="clock">
+    <div class="elapsed" id="elapsed">00:00</div>
+    <div class="left" id="remaining">—:— left</div>
+  </div>
+</footer>
+
+<aside id="drawer" aria-label="Script and settings">
+  <div class="drawer-head">
+    <h1>Script</h1>
+    <span class="hint"># slug · [direction]</span>
+    <button class="btn sm" id="closeDrawer">Close</button>
+  </div>
+  <textarea id="editor" spellcheck="true" placeholder="Paste or type your read here.
+
+Lines beginning with # become a slug.
+Lines wrapped in [brackets] become a direction and are dimmed on the prompter."></textarea>
+  <div class="drawer-foot">
+    <select id="scriptList" aria-label="Saved scripts"></select>
+    <button class="btn sm" id="saveAs">Save as…</button>
+    <button class="btn sm" id="newScript">New</button>
+    <button class="btn sm" id="deleteScript">Delete</button>
+    <button class="btn sm" id="flipY" aria-pressed="false" title="Flip vertically">Flip V</button>
+    <button class="btn sm" id="theme">Contrast</button>
+    <button class="btn sm" id="face" aria-pressed="false">Serif</button>
+    <button class="btn sm" id="cueToggle" aria-pressed="true">Cue bar</button>
+    <span class="stat" id="stat">0 words</span>
+  </div>
+</aside>
+
+<div id="keys" role="dialog" aria-label="Keyboard shortcuts">
+  <div class="card">
+    <h2>Keyboard and remote</h2>
+    <dl>
+      <dt>Space · PgDn · PgUp</dt><dd>Roll / hold — works with a presentation clicker</dd>
+      <dt>↑ ↓ · wheel</dt><dd>Back up or catch up a line at a time — works while rolling. Hold shift for three lines.</dd>
+      <dt>← →</dt><dd>Speed down / up</dd>
+      <dt>+ −</dt><dd>Text size</dd>
+      <dt>Home</dt><dd>Back to top</dd>
+      <dt>M</dt><dd>Mirror for beam-splitter glass</dd>
+      <dt>B</dt><dd>Blackout</dd>
+      <dt>F</dt><dd>Fullscreen</dd>
+      <dt>E</dt><dd>Open the script</dd>
+      <dt>Esc</dt><dd>Close this / exit fullscreen</dd>
+    </dl>
+    <p style="margin:16px 0 0"><button class="btn sm" id="closeKeys">Got it</button></p>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const $ = s => document.querySelector(s);
+  const stage=$("#stage"), mirror=$("#mirror"), script=$("#script"),
+        bulb=$("#bulb"), stateEl=$("#state"), rollBtn=$("#roll"),
+        drawer=$("#drawer"), editor=$("#editor"), bar=$("#progress i"),
+        countdown=$("#countdown"), keys=$("#keys");
+
+  const store = {
+    get(k,d){ try{ const v=localStorage.getItem(k); return v===null?d:JSON.parse(v);}catch(e){return d;} },
+    set(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); }catch(e){} },
+    del(k){ try{ localStorage.removeItem(k); }catch(e){} }
+  };
+
+  const S = Object.assign({
+    speed:70, size:64, lead:1.45, measure:1100,
+    mirror:false, flipY:false, serif:false, cue:true, theme:0, current:"Untitled"
+  }, store.get("cue.settings",{}));
+
+  const THEMES = [
+    {bg:"#000", fg:"#fff", label:"White on black"},
+    {bg:"#000", fg:"#ffc24d", label:"Amber on black"},
+    {bg:"#f4f4f4", fg:"#0b0b0b", label:"Black on white"}
+  ];
+
+  /* ---------- scripts ---------- */
+  const scriptsKey="cue.scripts";
+  let scripts = store.get(scriptsKey, {"Untitled":""});
+  if(!scripts[S.current]) S.current = Object.keys(scripts)[0] || "Untitled";
+
+  function refreshList(){
+    const sel=$("#scriptList"); sel.innerHTML="";
+    Object.keys(scripts).forEach(name=>{
+      const o=document.createElement("option");
+      o.value=name; o.textContent=name; o.selected = name===S.current;
+      sel.appendChild(o);
+    });
+  }
+
+  /* ---------- render ---------- */
+  let words=0;
+  function render(){
+    const text = editor.value;
+    const frag = document.createDocumentFragment();
+    let buffer=[];
+    const flush = () => {
+      if(!buffer.length) return;
+      const p=document.createElement("p");
+      p.textContent=buffer.join(" ");
+      frag.appendChild(p); buffer=[];
+    };
+    text.split(/\r?\n/).forEach(raw=>{
+      const line=raw.trim();
+      if(!line){ flush(); return; }
+      if(line.startsWith("#")){
+        flush();
+        const h=document.createElement("p"); h.className="slug";
+        h.textContent=line.replace(/^#+\s*/,""); frag.appendChild(h); return;
+      }
+      if(/^\[.*\]$/.test(line)){
+        flush();
+        const c=document.createElement("p"); c.className="cue";
+        c.textContent=line.slice(1,-1).trim(); frag.appendChild(c); return;
+      }
+      buffer.push(line);
+    });
+    flush();
+    script.replaceChildren(frag);
+
+    words = (text.replace(/\[[^\]]*\]/g,"").replace(/^#.*$/gm,"").match(/\S+/g)||[]).length;
+    $("#stat").textContent = words.toLocaleString()+" word"+(words===1?"":"s");
+    measureRun();
+  }
+
+  /* ---------- transport ---------- */
+  let y=0, maxY=0, rolling=false, last=0, elapsed=0, raf=null;
+
+  function measureRun(){
+    maxY = Math.max(1, script.offsetHeight - stage.clientHeight);
+    y = Math.min(y, maxY);
+    paint();
+    tickReadout();
+  }
+
+  function paint(){
+    script.style.transform = `translate3d(-50%, ${-y}px, 0)`;
+    bar.style.width = (100*y/maxY).toFixed(2)+"%";
+  }
+
+  function frame(t){
+    if(!last) last=t;
+    const dt=(t-last)/1000; last=t;
+    if(rolling){
+      y += S.speed*dt; elapsed += dt;
+      if(y>=maxY){ y=maxY; setRolling(false); }
+      paint(); tickReadout();
+    }
+    raf=requestAnimationFrame(frame);
+  }
+  raf=requestAnimationFrame(frame);
+
+  function fmt(s){
+    s=Math.max(0,Math.round(s));
+    return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
+  }
+  function tickReadout(){
+    $("#elapsed").textContent = fmt(elapsed);
+    const secsLeft = (maxY-y)/S.speed;
+    $("#remaining").textContent = fmt(secsLeft)+" left";
+    const totalSecs = maxY/S.speed;
+    const wpm = totalSecs>0 ? Math.round(words/(totalSecs/60)) : 0;
+    $("#speedVal").textContent = wpm ? wpm+" wpm" : Math.round(S.speed)+" px/s";
+  }
+
+  function setRolling(on){
+    if(on && y>=maxY) return;
+    rolling=on;
+    rollBtn.textContent = on?"Hold":"Roll";
+    rollBtn.setAttribute("aria-pressed", String(on));
+    bulb.classList.toggle("live", on);
+    bulb.classList.toggle("hold", !on && y>0);
+    stateEl.textContent = on?"ROLLING":(y>0?"HOLD":"STANDBY");
+  }
+
+  function roll(){
+    if(rolling){ setRolling(false); return; }
+    if(y===0 && countdownOn){ runCountdown(()=>setRolling(true)); }
+    else setRolling(true);
+  }
+
+  let countdownOn=true;
+  function runCountdown(done){
+    let n=3;
+    countdown.classList.add("on"); countdown.textContent=n;
+    stateEl.textContent="COUNTING";
+    const id=setInterval(()=>{
+      n--;
+      if(n<=0){ clearInterval(id); countdown.classList.remove("on"); done(); }
+      else countdown.textContent=n;
+    },800);
+  }
+
+  function toTop(){ y=0; elapsed=0; setRolling(false); paint(); tickReadout(); }
+
+  // manual position control — works while rolling, without stopping the roll
+  const lineHeight = () => S.size * S.lead;
+  function scrub(px){
+    y = Math.min(maxY, Math.max(0, y + px * (S.flipY ? -1 : 1)));
+    paint(); tickReadout();
+    if(!rolling && y>0){ bulb.classList.add("hold"); stateEl.textContent="HOLD"; }
+  }
+
+  stage.addEventListener("wheel", e=>{
+    e.preventDefault();
+    const unit = e.deltaMode===1 ? lineHeight() : e.deltaMode===2 ? stage.clientHeight : 1;
+    scrub(e.deltaY * unit);
+  }, {passive:false});
+
+  /* ---------- apply settings ---------- */
+  function apply(){
+    const r=document.documentElement.style;
+    r.setProperty("--size", S.size+"px");
+    r.setProperty("--leading", S.lead);
+    r.setProperty("--measure", S.measure+"px");
+    const th=THEMES[S.theme % THEMES.length];
+    r.setProperty("--stage-bg", th.bg);
+    r.setProperty("--stage-fg", th.fg);
+    mirror.style.transform = `scale(${S.mirror?-1:1}, ${S.flipY?-1:1})`;
+    script.classList.toggle("serif", S.serif);
+    document.body.classList.toggle("no-cue", !S.cue);
+
+    $("#speed").value=S.speed; $("#size").value=S.size;
+    $("#lead").value=S.lead;   $("#measure").value=S.measure;
+    $("#sizeVal").textContent=S.size+"px";
+    $("#leadVal").textContent=Number(S.lead).toFixed(2);
+    $("#measureVal").textContent=S.measure+"px";
+    $("#mirrorBtn").setAttribute("aria-pressed",String(S.mirror));
+    $("#flipY").setAttribute("aria-pressed",String(S.flipY));
+    $("#face").setAttribute("aria-pressed",String(S.serif));
+    $("#cueToggle").setAttribute("aria-pressed",String(S.cue));
+    $("#theme").textContent=th.label;
+    store.set("cue.settings",S);
+    measureRun();
+  }
+
+  /* ---------- wiring ---------- */
+  $("#speed").addEventListener("input",e=>{S.speed=+e.target.value; apply();});
+  $("#size").addEventListener("input",e=>{S.size=+e.target.value; apply();});
+  $("#lead").addEventListener("input",e=>{S.lead=+e.target.value; apply();});
+  $("#measure").addEventListener("input",e=>{S.measure=+e.target.value; apply();});
+
+  rollBtn.addEventListener("click",roll);
+  $("#top").addEventListener("click",toTop);
+  $("#mirrorBtn").addEventListener("click",()=>{S.mirror=!S.mirror; apply();});
+  $("#flipY").addEventListener("click",()=>{S.flipY=!S.flipY; apply();});
+  $("#face").addEventListener("click",()=>{S.serif=!S.serif; apply();});
+  $("#cueToggle").addEventListener("click",()=>{S.cue=!S.cue; apply();});
+  $("#theme").addEventListener("click",()=>{S.theme=(S.theme+1)%THEMES.length; apply();});
+  $("#fsBtn").addEventListener("click",toggleFs);
+  $("#scriptBtn").addEventListener("click",toggleDrawer);
+  $("#closeDrawer").addEventListener("click",()=>toggleDrawer(false));
+  $("#helpBtn").addEventListener("click",()=>keys.classList.add("on"));
+  $("#closeKeys").addEventListener("click",()=>keys.classList.remove("on"));
+  stage.addEventListener("click",roll);
+
+  function toggleFs(){
+    if(!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(()=>{});
+    else document.exitFullscreen?.();
+  }
+  function toggleDrawer(force){
+    const open = force===undefined ? !drawer.classList.contains("open") : force;
+    drawer.classList.toggle("open",open);
+    $("#scriptBtn").setAttribute("aria-pressed",String(open));
+    if(open) editor.focus();
+  }
+
+  let saveTimer=null;
+  editor.addEventListener("input",()=>{
+    render();
+    clearTimeout(saveTimer);
+    saveTimer=setTimeout(()=>{ scripts[S.current]=editor.value; store.set(scriptsKey,scripts); },400);
+  });
+
+  $("#scriptList").addEventListener("change",e=>{
+    scripts[S.current]=editor.value; store.set(scriptsKey,scripts);
+    S.current=e.target.value; editor.value=scripts[S.current]||"";
+    store.set("cue.settings",S); render(); toTop();
+  });
+  $("#saveAs").addEventListener("click",()=>{
+    const name=prompt("Name this script","Copy of "+S.current);
+    if(!name) return;
+    scripts[name]=editor.value; S.current=name;
+    store.set(scriptsKey,scripts); store.set("cue.settings",S); refreshList();
+  });
+  $("#newScript").addEventListener("click",()=>{
+    const name=prompt("Name the new script","Rundown "+(Object.keys(scripts).length+1));
+    if(!name) return;
+    scripts[name]=""; S.current=name; editor.value="";
+    store.set(scriptsKey,scripts); store.set("cue.settings",S); refreshList(); render(); toTop();
+  });
+  $("#deleteScript").addEventListener("click",()=>{
+    const names=Object.keys(scripts);
+    if(names.length<2){ alert("Keep at least one script."); return; }
+    if(!confirm("Delete “"+S.current+"”? This can't be undone.")) return;
+    delete scripts[S.current];
+    S.current=Object.keys(scripts)[0];
+    editor.value=scripts[S.current]||"";
+    store.set(scriptsKey,scripts); store.set("cue.settings",S); refreshList(); render(); toTop();
+  });
+
+  document.addEventListener("keydown",e=>{
+    if(e.target===editor || e.target.tagName==="INPUT" || e.target.tagName==="SELECT"){
+      if(e.key==="Escape") e.target.blur();
+      return;
+    }
+    const k=e.key;
+    if(k===" "||k==="PageDown"||k==="PageUp"){ e.preventDefault(); roll(); }
+    else if(k==="ArrowUp"){ e.preventDefault(); scrub(-lineHeight()*(e.shiftKey?3:1)); }
+    else if(k==="ArrowDown"){ e.preventDefault(); scrub(lineHeight()*(e.shiftKey?3:1)); }
+    else if(k==="ArrowRight"){ e.preventDefault(); S.speed=Math.min(260,S.speed+4); apply(); }
+    else if(k==="ArrowLeft"){ e.preventDefault(); S.speed=Math.max(8,S.speed-4); apply(); }
+    else if(k==="+"||k==="="){ S.size=Math.min(160,S.size+4); apply(); }
+    else if(k==="-"||k==="_"){ S.size=Math.max(24,S.size-4); apply(); }
+    else if(k==="Home"){ e.preventDefault(); toTop(); }
+    else if(k==="m"||k==="M"){ S.mirror=!S.mirror; apply(); }
+    else if(k==="b"||k==="B"){ document.body.classList.toggle("blackout"); if(rolling) setRolling(false); }
+    else if(k==="f"||k==="F"){ toggleFs(); }
+    else if(k==="e"||k==="E"){ e.preventDefault(); toggleDrawer(); }
+    else if(k==="?"){ keys.classList.toggle("on"); }
+    else if(k==="Escape"){ keys.classList.remove("on"); toggleDrawer(false); }
+  });
+
+  window.addEventListener("resize",measureRun);
+
+  /* ---------- boot ---------- */
+  const SAMPLE = `# Cold open
+Good evening. Here's a prompter that lives in a browser tab — no install, no licence, nothing to plug in.
+
+[look to camera two]
+
+Paste your read into the script panel and it appears here, set at whatever size the talent is comfortable with.
+
+# How to drive it
+Press space to roll and space again to hold. A presentation clicker works too — most of them send the same key.
+
+If the read drifts off, roll the mouse wheel or tap the up and down arrows to pull the script back a line or two. It keeps rolling while you do it.
+
+Left and right set the speed.
+
+[slower here]
+
+Hit Mirror if you're shooting through beam-splitter glass, and Full for a clean screen with no browser chrome.`;
+
+  if(!scripts[S.current]) scripts[S.current]="";
+  editor.value = scripts[S.current] || SAMPLE;
+  scripts[S.current]=editor.value;
+  store.set(scriptsKey,scripts);
+  refreshList();
+  render();
+  apply();
+  setRolling(false);
+  document.fonts?.ready.then(measureRun);
+
+  /* ---------- installable app ---------- */
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js").catch(()=>{});
+    });
+  }
+  let deferredInstall = null;
+  const installBtn = $("#installBtn");
+  window.addEventListener("beforeinstallprompt", e => {
+    e.preventDefault();
+    deferredInstall = e;
+    installBtn.hidden = false;
+  });
+  installBtn?.addEventListener("click", async () => {
+    if (!deferredInstall) return;
+    deferredInstall.prompt();
+    await deferredInstall.userChoice;
+    deferredInstall = null;
+    installBtn.hidden = true;
+  });
+  window.addEventListener("appinstalled", () => { installBtn.hidden = true; });
+})();
+</script>
+</body>
+</html>
